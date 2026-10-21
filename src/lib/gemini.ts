@@ -33,29 +33,78 @@ function getGeminiAI(): GoogleGenAI {
   return new GoogleGenAI({ apiKey });
 }
 
-function isQuotaError(err: any): boolean {
-  return (
-    err?.status === 'RESOURCE_EXHAUSTED' ||
-    err?.status === 429 ||
-    err?.message?.includes('429') ||
-    err?.message?.includes('Quota exceeded') ||
-    err?.message?.includes('RESOURCE_EXHAUSTED')
-  );
+export const TEXT_MODELS = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
+// Key-less model listing isn't possible (ai.models.list requires a key), so fallbacks are the
+// documented generateContent TTS models that return raw PCM like the primary model.
+export const TTS_MODELS = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'];
+
+export type StatusCallback = (message: string | null) => void;
+
+export class BusyError extends Error {
+  constructor() {
+    super("Still busy — Google's free Gemini servers are overloaded right now. Please try again in a minute.");
+    this.name = 'BusyError';
+  }
 }
 
-async function generateTtsWithRetry(ai: GoogleGenAI, params: any, retries = 3, delayMs = 2500): Promise<any> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await ai.models.generateContent(params);
-    } catch (err: any) {
-      if (isQuotaError(err) && attempt < retries) {
-        await new Promise((r) => setTimeout(r, delayMs));
-        delayMs *= 1.8;
-        continue;
+function errText(err: any): string {
+  return `${err?.status ?? ''} ${err?.code ?? ''} ${err?.message ?? ''}`;
+}
+
+export function isRetryableError(err: any): boolean {
+  if (err instanceof MissingApiKeyError) return false;
+  const code = Number(err?.status ?? err?.code);
+  if ([429, 500, 502, 503, 504].includes(code)) return true;
+  return /\b(429|500|503)\b|UNAVAILABLE|overloaded|RESOURCE_EXHAUSTED|high demand|Quota exceeded|INTERNAL|try again later/i.test(errText(err));
+}
+
+function isAuthError(err: any): boolean {
+  return /API[_ ]KEY[_ ]INVALID|API key not valid|PERMISSION_DENIED|\b401\b|\b403\b/i.test(errText(err));
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Shared Gemini caller: tries each model in order; each model gets up to `attempts`
+ * tries with exponential backoff + jitter on transient (429/5xx/overloaded) errors.
+ * Non-transient errors on one model (e.g. model not found) move on to the next model,
+ * except auth/key errors, which are thrown immediately.
+ */
+async function callGemini(
+  ai: GoogleGenAI,
+  models: string[],
+  buildParams: (model: string) => any,
+  opts: { onStatus?: StatusCallback; label?: string; attempts?: number } = {}
+): Promise<any> {
+  const { onStatus, label = 'request', attempts = 4 } = opts;
+  let sawBusy = false;
+  let lastErr: any;
+  for (let m = 0; m < models.length; m++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const res = await ai.models.generateContent(buildParams(models[m]));
+        onStatus?.(null);
+        return res;
+      } catch (err: any) {
+        lastErr = err;
+        if (err instanceof MissingApiKeyError || isAuthError(err)) { onStatus?.(null); throw err; }
+        if (!isRetryableError(err)) {
+          console.warn(`Gemini ${label}: model ${models[m]} failed (non-retryable), trying next model.`);
+          break;
+        }
+        sawBusy = true;
+        if (attempt < attempts) {
+          const delay = Math.min(16000, 1500 * 2 ** (attempt - 1)) + Math.random() * 1000;
+          onStatus?.(`Google's free servers are busy, retrying… (attempt ${attempt + 1} of ${attempts}${m > 0 ? `, backup model ${m}` : ''})`);
+          await sleep(delay);
+        }
       }
-      throw err;
     }
+    if (m < models.length - 1) onStatus?.(`Google's free servers are busy, switching to a backup model… (${m + 2} of ${models.length})`);
   }
+  onStatus?.(null);
+  if (sawBusy) throw new BusyError();
+  throw lastErr;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -91,7 +140,7 @@ function pcmToWavBytes(raw: Uint8Array): Uint8Array {
   return out;
 }
 
-export async function optimizeScript(script: string, tone: string = 'tiktok_viral') {
+export async function optimizeScript(script: string, tone: string = 'tiktok_viral', onStatus?: StatusCallback) {
   if (!script || typeof script !== 'string') throw new Error('Script text is required');
   const ai = getGeminiAI();
 
@@ -122,24 +171,24 @@ Return ONLY valid JSON matching this schema:
   "estimatedDurationSeconds": number
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    const response = await callGemini(ai, TEXT_MODELS, (model) => ({
+      model,
       contents: prompt,
       config: { responseMimeType: 'application/json', temperature: 0.7 },
-    });
+    }), { onStatus, label: 'optimize' });
     return JSON.parse(response.text || '{}');
 }
 
-export async function generateVoiceSample(voice: string = 'Kore', text: string = 'Hey there! This is what my voice actor performance sounds like.'): Promise<string> {
+export async function generateVoiceSample(voice: string = 'Kore', text: string = 'Hey there! This is what my voice actor performance sounds like.', onStatus?: StatusCallback): Promise<string> {
   const ai = getGeminiAI();
-  const ttsResponse = await generateTtsWithRetry(ai, {
-    model: 'gemini-3.1-flash-tts-preview',
+  const ttsResponse = await callGemini(ai, TTS_MODELS, (model) => ({
+    model,
     contents: [{ parts: [{ text }] }],
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
     },
-  });
+  }), { onStatus, label: 'voice sample', attempts: 3 });
   const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   if (!base64Audio) throw new Error('No audio returned for voice sample');
   return base64Audio;
@@ -153,6 +202,7 @@ export interface GenerateVoiceoverParams {
   multiSpeaker?: boolean;
   speaker2Voice?: string;
   speaker2Script?: string;
+  onStatus?: StatusCallback;
 }
 
 export async function generateVoiceover(params: GenerateVoiceoverParams): Promise<any> {
@@ -163,6 +213,7 @@ export async function generateVoiceover(params: GenerateVoiceoverParams): Promis
     multiSpeaker = false,
     speaker2Voice = 'Puck',
     speaker2Script = '',
+    onStatus,
   } = params;
   if (!script || typeof script !== 'string') throw new Error('Script text is required');
 
@@ -171,8 +222,8 @@ export async function generateVoiceover(params: GenerateVoiceoverParams): Promis
     let ttsResponse;
     if (multiSpeaker && speaker2Script) {
       const dialogueText = `Speaker 1: ${script}\nSpeaker 2: ${speaker2Script}`;
-      ttsResponse = await generateTtsWithRetry(ai, {
-        model: 'gemini-3.1-flash-tts-preview',
+      ttsResponse = await callGemini(ai, TTS_MODELS, (model) => ({
+        model,
         contents: [{ parts: [{ text: dialogueText }] }],
         config: {
           responseModalities: [Modality.AUDIO],
@@ -185,16 +236,16 @@ export async function generateVoiceover(params: GenerateVoiceoverParams): Promis
             },
           },
         },
-      });
+      }), { onStatus, label: 'voiceover' });
     } else {
-      ttsResponse = await generateTtsWithRetry(ai, {
-        model: 'gemini-3.1-flash-tts-preview',
+      ttsResponse = await callGemini(ai, TTS_MODELS, (model) => ({
+        model,
         contents: [{ parts: [{ text: script }] }],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
         },
-      });
+      }), { onStatus, label: 'voiceover' });
     }
 
     const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
@@ -249,18 +300,28 @@ Return ONLY valid JSON matching this schema:
   }
 }`;
 
-    const captionResponse = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+    let captionResponse: any = null;
+    try {
+      onStatus?.('Voiceover ready — aligning captions…');
+      captionResponse = await callGemini(ai, TEXT_MODELS, (model) => ({
+      model,
       contents: [
         { inlineData: { mimeType: 'audio/wav', data: wavBase64 } },
         { text: captionPrompt },
       ],
       config: { responseMimeType: 'application/json', temperature: 0.1, maxOutputTokens: 8192 },
-    });
+    }), { onStatus, label: 'caption alignment' });
+    } catch (e) {
+      if (e instanceof MissingApiKeyError || isAuthError(e)) throw e;
+      // Alignment failed (busy servers etc.): fall through to the local timestamp estimate below.
+      console.warn('Caption alignment failed, using local timestamp estimate:', e);
+    } finally {
+      onStatus?.(null);
+    }
 
     let rawCaptionData: any = {};
     try {
-      rawCaptionData = JSON.parse(captionResponse.text || '{}');
+      rawCaptionData = JSON.parse(captionResponse?.text || '{}');
     } catch (e) {
       console.warn('Failed to parse Gemini caption response, using full script fallback aligner:', e);
     }
@@ -354,9 +415,7 @@ Return ONLY valid JSON matching this schema:
       createdAt: new Date().toISOString(),
     };
   } catch (error: any) {
-    if (isQuotaError(error)) {
-      throw new Error('Gemini API free tier rate limit reached. Please wait a few seconds and click Generate Voiceover again.');
-    }
+    if (isRetryableError(error) && !(error instanceof BusyError)) throw new BusyError();
     throw error;
   }
 }

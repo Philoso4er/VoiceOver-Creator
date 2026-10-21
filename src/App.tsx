@@ -29,6 +29,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [optimizedData, setOptimizedData] = useState<any | null>(null);
 
   // Active Voiceover Result & Audio Blob URL
@@ -86,7 +87,7 @@ export default function App() {
     setGenerationError(null);
 
     try {
-      const data = await optimizeScript(script, selectedTone);
+      const data = await optimizeScript(script, selectedTone, setGenerationStatus);
       setOptimizedData(data);
     } catch (err: any) {
       console.error('Optimize script error:', err);
@@ -94,6 +95,7 @@ export default function App() {
       setGenerationError(err.message || 'Failed to optimize script.');
     } finally {
       setIsOptimizing(false);
+      setGenerationStatus(null);
     }
   };
 
@@ -112,6 +114,7 @@ export default function App() {
           multiSpeaker,
           speaker2Voice,
           speaker2Script,
+          onStatus: setGenerationStatus,
       });
 
       // Convert PCM Base64 to Blob URL for audio player
@@ -131,6 +134,7 @@ export default function App() {
       setGenerationError(err.message || 'Failed to generate voiceover.');
     } finally {
       setIsGenerating(false);
+      setGenerationStatus(null);
     }
   };
 
@@ -227,6 +231,12 @@ export default function App() {
 
           {/* Big Action Bar */}
           <div className="flex flex-col items-center justify-center p-6 bg-[#0D0D0D] border border-white/10 rounded-2xl shadow-2xl space-y-3">
+            {generationStatus && !generationError && (
+              <div role="status" aria-live="polite" className="w-full flex items-center gap-2 text-xs text-sky-300 bg-sky-500/10 border border-sky-500/20 rounded-xl p-3.5">
+                <AlertCircle className="w-4 h-4 shrink-0 text-sky-400" />
+                <span>{generationStatus}</span>
+              </div>
+            )}
             {generationError && (
               <div className="w-full flex items-center justify-between gap-3 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5">
                 <div className="flex items-center gap-2">
