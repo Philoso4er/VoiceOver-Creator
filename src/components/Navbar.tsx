@@ -1,13 +1,14 @@
 import React from 'react';
-import { Mic, Sparkles, History, Volume2, BookmarkCheck } from 'lucide-react';
+import { Mic, Sparkles, History, Volume2, BookmarkCheck, KeyRound } from 'lucide-react';
 
 interface NavbarProps {
   onOpenHistory: () => void;
   onOpenTemplates: () => void;
+  onOpenSettings: () => void;
   savedCount: number;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ onOpenHistory, onOpenTemplates, savedCount }) => {
+export const Navbar: React.FC<NavbarProps> = ({ onOpenHistory, onOpenTemplates, onOpenSettings, savedCount }) => {
   return (
     <header className="sticky top-0 z-40 bg-[#0D0D0D]/90 backdrop-blur-md border-b border-white/10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -33,6 +34,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenHistory, onOpenTemplates, 
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={onOpenSettings}
+            title="Gemini API key settings"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer"
+          >
+            <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
+            <span>API Key</span>
+          </button>
           <button
             onClick={onOpenTemplates}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer"

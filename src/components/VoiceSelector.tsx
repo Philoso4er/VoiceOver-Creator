@@ -1,3 +1,4 @@
+import { generateVoiceSample } from '../lib/gemini';
 import React, { useState, useRef } from 'react';
 import { Mic2, Flame, Users, Volume2, Play, Pause, Sparkles, Check, Loader2 } from 'lucide-react';
 import { VoiceName, ViralTone } from '../types';
@@ -73,20 +74,11 @@ export const VoiceSelector: React.FC<VoiceSelectorProps> = ({
       return;
     }
 
-    // Fetch live sample from Gemini TTS server
+    // Fetch live sample from Gemini TTS (client-side)
     setLoadingSampleId(voiceName);
 
     try {
-      const res = await fetch('/api/voice-sample', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice: voiceName, text }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success || !data.audioBase64) {
-        throw new Error(data.error || 'Failed to fetch audio sample');
-      }
+      const data = { audioBase64: await generateVoiceSample(voiceName, text) };
 
       // Convert PCM to WAV Blob URL
       const { url } = pcmBase64ToWavBlobUrl(data.audioBase64);

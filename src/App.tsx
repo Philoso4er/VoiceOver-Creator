@@ -8,6 +8,8 @@ import { HistoryDrawer } from './components/HistoryDrawer';
 import { VoiceName, ViralTone, VoiceoverResult, ScriptTemplate } from './types';
 import { SCRIPT_TEMPLATES } from './data/presetVoices';
 import { pcmBase64ToWavBlobUrl } from './utils/wavConverter';
+import { optimizeScript, generateVoiceover, MissingApiKeyError } from './lib/gemini';
+import { ApiKeySettings } from './components/ApiKeySettings';
 import { Sparkles, Mic, Wand2, RefreshCw, AlertCircle, Play } from 'lucide-react';
 
 export default function App() {
@@ -40,6 +42,7 @@ export default function App() {
 
   // History Drawer state & localStorage
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [history, setHistory] = useState<VoiceoverResult[]>([]);
 
   // Load history from localStorage on startup
@@ -76,44 +79,32 @@ export default function App() {
     setOptimizedData(null);
   };
 
-  // Call `/api/optimize-script`
+  // Optimize script via Gemini (client-side)
   const handleOptimizeScript = async () => {
     if (!script.trim()) return;
     setIsOptimizing(true);
     setGenerationError(null);
 
     try {
-      const res = await fetch('/api/optimize-script', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script, tone: selectedTone }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Optimization request failed.');
-      }
-
-      setOptimizedData(data.data);
+      const data = await optimizeScript(script, selectedTone);
+      setOptimizedData(data);
     } catch (err: any) {
       console.error('Optimize script error:', err);
+      if (err instanceof MissingApiKeyError) setIsSettingsOpen(true);
       setGenerationError(err.message || 'Failed to optimize script.');
     } finally {
       setIsOptimizing(false);
     }
   };
 
-  // Call `/api/generate-voiceover`
+  // Generate voiceover via Gemini (client-side)
   const handleGenerateVoiceover = async () => {
     if (!script.trim()) return;
     setIsGenerating(true);
     setGenerationError(null);
 
     try {
-      const res = await fetch('/api/generate-voiceover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const result: VoiceoverResult = await generateVoiceover({
           script,
           voice: selectedVoice,
           tone: selectedTone,
@@ -121,15 +112,7 @@ export default function App() {
           multiSpeaker,
           speaker2Voice,
           speaker2Script,
-        }),
       });
-
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Voiceover generation failed.');
-      }
-
-      const result: VoiceoverResult = json.data;
 
       // Convert PCM Base64 to Blob URL for audio player
       const { url, durationSeconds } = pcmBase64ToWavBlobUrl(result.audioBase64);
@@ -144,6 +127,7 @@ export default function App() {
       saveToHistory(result);
     } catch (err: any) {
       console.error('Generate voiceover error:', err);
+      if (err instanceof MissingApiKeyError) setIsSettingsOpen(true);
       setGenerationError(err.message || 'Failed to generate voiceover.');
     } finally {
       setIsGenerating(false);
@@ -180,8 +164,10 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
       {/* Navbar */}
+      <ApiKeySettings isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
       <Navbar
         onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenTemplates={() => {
           const section = document.getElementById('script-section');
           section?.scrollIntoView({ behavior: 'smooth' });
