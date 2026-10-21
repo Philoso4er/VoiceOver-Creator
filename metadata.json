@@ -1,0 +1,6 @@
+{
+  "name": "Viral Voiceover Studio",
+  "description": "Turn script text or files into viral, relatable audio voiceovers with transcriptions, timestamped captions, and audio download.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
